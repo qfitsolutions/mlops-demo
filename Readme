@@ -11,12 +11,16 @@ az vm create \
 az vm open-port --port 80 --resource-group MLResourceGroup --name MLVM
 
 
+ssh username@hostname
+
 
 
 sudo apt update
 sudo apt install python3-pip -y
 
-
+mkdir venv
+python3 -m venv venv
+source venv/bin/activate
 
 pip3 install scikit-learn flask joblib
 
