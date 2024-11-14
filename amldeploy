@@ -1,0 +1,220 @@
+### **Step 1: Set Up Azure Machine Learning Workspace**
+
+#### **A. Log in to Azure and Set Up Workspace**
+
+1. **Login to Azure:**
+   ```bash
+   az login
+   ```
+
+2. **Create a Resource Group:**
+   ```bash
+   az group create --name MLResourceGroup --location eastus
+   ```
+
+3. **Create an Azure Machine Learning Workspace:**
+   ```bash
+   az ml workspace create --name ml-workspace --resource-group MLResourceGroup --location eastus
+   ```
+
+4. **Download the `config.json` for Workspace Authentication (Optional):**
+   ```bash
+   az ml workspace download-config --name ml-workspace --resource-group MLResourceGroup
+   ```
+
+#### **B. Set Up Python Environment**
+
+```bash
+pip install azureml-core azureml-sdk azureml-dataset-runtime azureml-defaults
+```
+
+---
+
+### **Step 2: Train the Model and Register It**
+
+We will use the Azure ML SDK to train our model and register it.
+
+1. **Create a new Python script (`train_and_register.py`)**:
+
+   ```python
+   from azureml.core import Workspace, Dataset, Experiment, Run
+   from azureml.core.model import Model
+   from sklearn.datasets import load_iris
+   from sklearn.ensemble import RandomForestClassifier
+   from sklearn.model_selection import train_test_split
+   import joblib
+
+   # Connect to the Azure ML workspace
+   ws = Workspace.from_config()
+
+   # Create an experiment
+   experiment = Experiment(workspace=ws, name='iris-experiment')
+
+   # Start logging
+   run = experiment.start_logging()
+
+   # Load dataset
+   data = load_iris()
+   X_train, X_test, y_train, y_test = train_test_split(data.data, data.target, test_size=0.3, random_state=42)
+
+   # Train the model
+   model = RandomForestClassifier()
+   model.fit(X_train, y_train)
+
+   # Save the model
+   joblib.dump(model, 'iris_model.pkl')
+   print("Model trained and saved.")
+
+   # Register the model
+   model = Model.register(
+       workspace=ws,
+       model_path="iris_model.pkl",
+       model_name="iris-classifier"
+   )
+
+   print(f"Model registered: {model.name} with ID: {model.id}")
+
+   # End the run
+   run.complete()
+   ```
+
+2. **Run the Training Script:**
+
+   ```bash
+   python train_and_register.py
+   ```
+
+   This script will train the model, save it as `iris_model.pkl`, and register it in your Azure ML workspace.
+
+---
+
+### **Step 3: Deploy the Model as a Web Service**
+
+#### **A. Create a Scoring Script (`score.py`)**
+
+Create a file called `score.py`:
+
+```python
+import json
+import joblib
+from azureml.core.model import Model
+from flask import Flask, request, jsonify
+
+def init():
+    global model
+    # Load the model from the registered file
+    model_path = Model.get_model_path('iris-classifier')
+    model = joblib.load(model_path)
+
+def run(raw_data):
+    data = json.loads(raw_data)
+    prediction = model.predict([data['data']])
+    return json.dumps({'prediction': int(prediction[0])})
+```
+
+#### **B. Create an Environment File (`env.yml`)**
+
+Create an environment file `env.yml` to define dependencies:
+
+```yaml
+name: iris-env
+dependencies:
+  - python=3.8
+  - pip:
+      - scikit-learn
+      - joblib
+      - pandas
+      - flask
+```
+
+#### **C. Create an Inference Configuration and Deployment Configuration**
+
+1. **Create a new Python script (`deploy_model.py`)**:
+
+   ```python
+   from azureml.core import Workspace, Model, Environment
+   from azureml.core.model import InferenceConfig
+   from azureml.core.webservice import AciWebservice, Webservice
+
+   # Connect to your workspace
+   ws = Workspace.from_config()
+
+   # Get the registered model
+   model = Model(ws, name='iris-classifier')
+
+   # Define the environment using the YAML file
+   env = Environment.from_conda_specification(name='iris-env', file_path='env.yml')
+
+   # Create inference configuration
+   inference_config = InferenceConfig(entry_script='score.py', environment=env)
+
+   # Define deployment configuration
+   aci_config = AciWebservice.deploy_configuration(cpu_cores=1, memory_gb=1)
+
+   # Deploy the model as a web service
+   service = Model.deploy(
+       workspace=ws,
+       name='iris-service',
+       models=[model],
+       inference_config=inference_config,
+       deployment_config=aci_config
+   )
+
+   service.wait_for_deployment(show_output=True)
+
+   print(f"Service deployed at {service.scoring_uri}")
+   ```
+
+2. **Run the Deployment Script:**
+
+   ```bash
+   python deploy_model.py
+   ```
+
+   This script deploys the model to **Azure Container Instances (ACI)** and outputs the endpoint URL.
+
+---
+
+### **Step 4: Test the Deployed Web Service**
+
+Use `curl` or Postman to test the deployed service:
+
+```bash
+curl -X POST <scoring_uri> \
+-H "Content-Type: application/json" \
+-d '{"data": [5.1, 3.5, 1.4, 0.2]}'
+```
+
+Expected Output:
+```json
+{
+  "prediction": 0
+}
+```
+
+### **Step 5: Monitor the Deployment**
+
+1. **Monitor the Service Logs:**
+   ```bash
+   az ml service logs -g MLResourceGroup -n iris-service
+   ```
+
+2. **Delete the Web Service (Cleanup):**
+   ```python
+   service.delete()
+   ```
+
+3. **Delete Azure Resources (Optional):**
+   ```bash
+   az group delete --name MLResourceGroup --yes --no-wait
+   ```
+
+---
+
+### **Summary**
+1. **Set up Azure ML Workspace**.
+2. **Train and register the ML model**.
+3. **Deploy the model using Azure Container Instances**.
+4. **Test the deployed service**.
+
+This approach offers a scalable and production-ready solution for deploying machine learning models using Azure ML services. Let me know if you have any questions or need further customization!
