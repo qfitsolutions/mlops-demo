@@ -21,7 +21,7 @@ python3 data_to_mysql.py
 
 #### 3.1. Install Airflow
 ```bash
-pip3 install apache-airflow
+pip3 install mysql-connector-python pandas scikit-learn flask gunicorn apache-airflow pickle apache-airflow
 airflow db init
 
 
