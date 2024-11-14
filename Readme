@@ -42,6 +42,15 @@ curl -X POST http://172.187.169.75:5000/predict -H "Content-Type: application/js
 
 
 ######################################
+14/11/2024
+
+day2:
+
+assignment:
+create a vm
+connectvm using ssh.
+run below commands:
+------
 
 sudo apt update
 sudo apt install docker.io -y
