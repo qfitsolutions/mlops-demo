@@ -1,95 +1,257 @@
-To execute the ML pipeline, you'll need to follow these steps:
+Let's extend the example by incorporating **MySQL Server** for data storage and **Apache Airflow** for orchestrating the entire Machine Learning pipeline. We'll follow these steps:
 
-**Step 1: Install required packages**
+### Overview
+1. **Data Collection**: Store the California Housing dataset in MySQL.
+2. **Data Preparation**: Use Apache Airflow to extract data from MySQL, prepare it, and store processed data back in MySQL.
+3. **Model Training**: Train the model using data fetched from MySQL.
+4. **Model Deployment**: Deploy the model using Flask.
+5. **Orchestration with Airflow**: Automate the entire workflow using Apache Airflow.
 
-Run the following commands in your terminal:
+### Prerequisites
+- A virtual machine with Python, MySQL Server, and Apache Airflow installed.
+- Required libraries: `mysql-connector-python`, `pandas`, `scikit-learn`, `flask`, `gunicorn`, `apache-airflow`, and `pickle`.
+
+### Step 1: Setting Up MySQL Server
+
+#### 1.1. Install MySQL Server
 ```bash
-pip install mysql-connector-python pandas scikit-learn joblib flask apache-airflow
+sudo apt update
+sudo apt install mysql-server -y
+sudo systemctl start mysql
+sudo systemctl enable mysql
 ```
-**Step 2: Create a virtual environment**
 
-Create a new virtual environment using `virtualenv`:
+#### 1.2. Secure MySQL Installation
 ```bash
-virtualenv todo_env
+sudo mysql_secure_installation
 ```
-**Step 3: Activate the virtual environment**
 
-Activate the virtual environment using the following command:
-```bash
-source todo_env/bin/activate
-```
-**Step 4: Install required packages in the virtual environment**
-
-Install the required packages in the virtual environment using the following command:
-```bash
-pip install mysql-connector-python pandas scikit-learn joblib flask apache-airflow
-```
-**Step 5: Create a MySQL database and table**
-
-Create a MySQL database and table using the following SQL commands:
+#### 1.3. Create Database and User
 ```sql
-CREATE DATABASE todo_db;
-USE todo_db;
+-- Log in to MySQL
+sudo mysql -u root -p
 
-CREATE TABLE tasks (
-    id INT AUTO_INCREMENT,
-    title VARCHAR(255),
-    description TEXT,
-    due_date DATE,
-    completed BOOLEAN DEFAULT 0,
-    PRIMARY KEY (id)
-);
+-- Create a new database
+CREATE DATABASE housing_db;
+
+-- Create a new user
+CREATE USER 'mluser'@'localhost' IDENTIFIED BY 'mlpassword';
+
+-- Grant privileges
+GRANT ALL PRIVILEGES ON housing_db.* TO 'mluser'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
 ```
-**Step 6: Populate the database with sample data**
 
-Populate the database with sample data using the following Python script:
+---
+
+### Step 2: Data Collection and Storage in MySQL
+
+#### `data_to_mysql.py`
 ```python
+import pandas as pd
 import mysql.connector
+from sklearn.datasets import fetch_california_housing
 
-# Connect to the database
-cnx = mysql.connector.connect(
-    user='username',
-    password='password',
+# Fetch the California Housing dataset
+data = fetch_california_housing()
+df = pd.DataFrame(data.data, columns=data.feature_names)
+df['target'] = data.target
+
+# Connect to MySQL
+connection = mysql.connector.connect(
     host='localhost',
-    database='todo_db'
+    user='mluser',
+    password='mlpassword',
+    database='housing_db'
+)
+cursor = connection.cursor()
+
+# Create table if not exists
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS housing_data (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        MedInc FLOAT, HouseAge FLOAT, AveRooms FLOAT, AveBedrms FLOAT,
+        Population FLOAT, AveOccup FLOAT, Latitude FLOAT, Longitude FLOAT, target FLOAT
+    )
+''')
+
+# Insert data into MySQL
+for _, row in df.iterrows():
+    cursor.execute('''
+        INSERT INTO housing_data (MedInc, HouseAge, AveRooms, AveBedrms, Population, AveOccup, Latitude, Longitude, target)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ''', tuple(row))
+connection.commit()
+
+print("Data inserted into MySQL successfully.")
+
+# Close connection
+cursor.close()
+connection.close()
+```
+
+**Run the script**:
+```bash
+python3 data_to_mysql.py
+```
+
+---
+
+### Step 3: Setting Up Apache Airflow
+
+#### 3.1. Install Airflow
+```bash
+pip3 install apache-airflow
+airflow db init
+```
+
+#### 3.2. Start Airflow Services
+```bash
+airflow standalone
+```
+
+#### 3.3. Create Airflow DAG for ML Pipeline
+
+Create a file named `housing_ml_pipeline.py` in the `dags` folder.
+
+```python
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime
+import pandas as pd
+import mysql.connector
+from sklearn.ensemble import RandomForestRegressor
+import pickle
+
+# MySQL connection details
+MYSQL_CONN = {
+    'host': 'localhost',
+    'user': 'mluser',
+    'password': 'mlpassword',
+    'database': 'housing_db'
+}
+
+def extract_data(**kwargs):
+    connection = mysql.connector.connect(**MYSQL_CONN)
+    query = "SELECT * FROM housing_data"
+    df = pd.read_sql(query, con=connection)
+    df.to_csv('/tmp/raw_data.csv', index=False)
+    connection.close()
+
+def prepare_data():
+    df = pd.read_csv('/tmp/raw_data.csv')
+    X = df.drop(columns=['target', 'id'])
+    y = df['target']
+    X.to_csv('/tmp/X.csv', index=False)
+    y.to_csv('/tmp/y.csv', index=False)
+
+def train_model():
+    X = pd.read_csv('/tmp/X.csv')
+    y = pd.read_csv('/tmp/y.csv')
+    
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
+    
+    with open('/tmp/housing_model.pkl', 'wb') as file:
+        pickle.dump(model, file)
+
+default_args = {
+    'owner': 'ravi',
+    'start_date': datetime(2023, 1, 1),
+    'retries': 1
+}
+
+dag = DAG(
+    'housing_ml_pipeline',
+    default_args=default_args,
+    schedule_interval='@daily',
+    catchup=False
 )
 
-# Create a cursor object
-cursor = cnx.cursor()
+extract_task = PythonOperator(
+    task_id='extract_data',
+    python_callable=extract_data,
+    dag=dag
+)
 
-# Insert sample data into the tasks table
-query = "INSERT INTO tasks (title, description, due_date, completed) VALUES (%s, %s, %s, %s)"
-values = [
-    ('Buy milk', 'Buy milk from the store', '2023-07-26', False),
-    ('Walk the dog', 'Walk the dog at 8am', '2023-07-27', False),
-    ('Do laundry', 'Do laundry today', '2023-07-28', False)
-]
+prepare_task = PythonOperator(
+    task_id='prepare_data',
+    python_callable=prepare_data,
+    dag=dag
+)
 
-cursor.executemany(query, values)
+train_task = PythonOperator(
+    task_id='train_model',
+    python_callable=train_model,
+    dag=dag
+)
 
-# Commit the changes
-cnx.commit()
-
-# Close the cursor and connection
-cursor.close()
-cnx.close()
+extract_task >> prepare_task >> train_task
 ```
-**Step 7: Run the data pipeline**
 
-Run the data pipeline using the following commands:
+#### 3.4. Trigger Airflow DAG
 ```bash
-airflow db init
-airflow db upgrade
-airflow scheduler
+airflow dags list
+airflow dags trigger housing_ml_pipeline
 ```
-**Step 8: Trigger the pipeline**
 
-Trigger the pipeline by clicking on the "Trigger DAG" button in the Airflow UI or by running the following command:
+---
+
+### Step 4: Model Deployment using Flask
+
+#### `app.py`
+```python
+from flask import Flask, request, jsonify
+import pandas as pd
+import pickle
+
+app = Flask(__name__)
+
+# Load the trained model
+with open('/tmp/housing_model.pkl', 'rb') as file:
+    model = pickle.load(file)
+
+@app.route('/')
+def home():
+    return "California Housing Price Prediction API"
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    data = request.get_json()
+    df = pd.DataFrame([data])
+    prediction = model.predict(df)
+    return jsonify({'predicted_price': prediction[0]})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+```
+
+#### 4.1. Run Flask App
 ```bash
-airflow trigger_dag todo_dag
+python3 app.py
 ```
-**Step 9: Verify the pipeline**
 
-Verify the pipeline by checking the Airflow UI for the pipeline's status and logs.
+---
 
-That's it! You've now executed the ML pipeline.
+### Step 5: Accessing the Deployed Model
+
+Use `curl` to send a request:
+```bash
+curl -X POST http://localhost:5000/predict -H "Content-Type: application/json" \
+-d '{"MedInc": 8.3, "HouseAge": 30, "AveRooms": 6.0, "AveBedrms": 1.0, "Population": 500, "AveOccup": 3.5, "Latitude": 37.5, "Longitude": -120.2}'
+```
+
+Expected Response:
+```json
+{"predicted_price": 2.345}
+```
+
+---
+
+### Summary
+- **MySQL** stores raw housing data.
+- **Apache Airflow** orchestrates data extraction, preparation, and model training.
+- **Flask** serves the trained model via an API endpoint.
+
+This approach ensures your Machine Learning pipeline is automated, scalable, and deployable.
