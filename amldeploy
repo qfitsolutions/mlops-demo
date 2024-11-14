@@ -25,7 +25,7 @@
 #### **B. Set Up Python Environment**
 
 ```bash
-pip3 install azureml-core azureml-sdk azureml-dataset-runtime azureml-defaults
+pip3 install azureml-core azureml-sdk azureml-dataset-runtime azureml-defaults azureml.core azureml
 ```
 
 ---
